@@ -59,21 +59,9 @@ VERIFIED OK
 When viewed with `| grep --color '#\|$'`, the `#` characters are highlighted
 in red, making the `H` and `I` shapes immediately visible in the ASCII column.
 
-### Screenshot / terminal recording
 
-<!-- ============================================================ -->
-<!-- INSERT YOUR SCREENSHOT OR GIF BELOW THIS LINE               -->
-<!-- Recommended: capture `encode` output + colourised xxd view  -->
-<!-- You can use tools like:                                      -->
-<!--   - asciinema (https://asciinema.org) for terminal recordings -->
-<!--   - scrot / gnome-screenshot for static screenshots         -->
-<!--                                                              -->
-<!-- Example markdown to embed an image once you have it:        -->
-<!--   ![xxdart demo](images/demo.png)                           -->
-<!--   ![xxdart demo](images/demo.gif)                           -->
-<!-- ============================================================ -->
-
-*[Screenshot or terminal recording goes here - see comment above for instructions]*
+#### Decoding with correct flags and without flags 
+<img width="1276" height="526" alt="flags" src="https://github.com/user-attachments/assets/d04bfbcf-6e94-4937-b3f9-618618ca69f3" />
 
 ---
 
@@ -110,6 +98,10 @@ art bytes = rows x 5
 
 Reading the xxd output top-to-bottom, each group of 7 rows is one character.
 
+
+##### Vertical layout 
+<img width="509" height="902" alt="xxd-art" src="https://github.com/user-attachments/assets/277198fd-9a28-4206-90e2-cd9e838843fb" />
+
 ### Horizontal layout (--layout horizontal)
 
 Characters are placed side by side in one wide row, the traditional banner
@@ -123,6 +115,9 @@ art bytes = 7 x cols
 ```
 
 Use this for short labels or banners where side-by-side text looks better.
+
+##### Horizontal layout 
+<img width="1427" height="644" alt="xxd-art-horizontal" src="https://github.com/user-attachments/assets/4c31d857-fbec-4868-bac5-e070e57db2e6" />
 
 ---
 
@@ -142,24 +137,6 @@ brew install vim
 
 # Fedora / RHEL
 sudo dnf install vim-common
-```
-
----
-
-## Installation
-
-No installation required. Copy `xxdart.py` to any location and run it directly:
-
-```
-python3 xxdart.py --help
-```
-
-To make it available as a command:
-
-```
-chmod +x xxdart.py
-sudo cp xxdart.py /usr/local/bin/xxdart
-xxdart encode "HELLO" -o out.bin
 ```
 
 ---
@@ -613,10 +590,7 @@ The receiver needs only the file and the key command - no other software.
 
 ---
 
-## Edge Cases and Error Handling
-
-**Unsupported characters** are skipped with a warning. Only characters present
-in the internal font are rendered. The warning names each skipped character.
+## Edge Cases
 
 **Message too wide for horizontal layout** produces an error when the message
 requires more than 256 bytes per row (roughly 43+ characters). The error message
@@ -625,35 +599,6 @@ vertical layout to handle any message length.
 
 **Message too wide for --cols-per-row** produces an error with the minimum
 required width printed. Increase `--cols-per-row` or shorten the message.
-
-**xxd not installed** produces a clear error on stderr. The file is still
-written and byte-verified. The key command is still printed.
-
-**Empty message after filtering** (all characters were unsupported) produces
-an error and no file is written.
-
-**`--on-byte` equals `--off-byte`** produces an error. Lit and dark pixels
-would be identical and the art would be invisible.
-
-**`--art-char '.'`** produces an error and a stern message. `.` is the default
-background character; using it as the art character makes the art completely
-invisible.
-
-**`--art-char` and `--on-byte` together** produces an error. Use one or the
-other.
-
-**Out-of-range byte values** (outside 0–255 for `--on-byte` / `--off-byte`)
-produce a clear error message.
-
-**Invalid numeric arguments** (`--group 0`, `--limit -1`, `--start-offset -5`,
-`--cols-per-row 0`) are caught with descriptive error messages before any file
-is written.
-
-**`--binary-style packed` with `--layout horizontal`** produces an error.
-Packed mode requires vertical layout.
-
-**File write failure** (permissions, disk full, bad path) produces an OS error
-message and exits cleanly - no partial file is left on disk.
 
 ---
 
