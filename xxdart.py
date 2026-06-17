@@ -405,7 +405,7 @@ def make_noise_bytes(n: int, noise_type: str) -> bytes:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  xxd COMMAND CONSTRUCTION
+#  xxd COMMAND CONSTRUCTION + GREP COLORISER
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def build_xxd_cmd(
@@ -444,6 +444,64 @@ def build_xxd_cmd(
 
     cmd.append(outfile)
     return cmd
+
+
+def build_grep_cmd(mode: str, on_byte: int) -> list[str] | None:
+    """Return a grep argv list that colour-highlights the art in xxd output.
+
+    Highlights the lit-pixel marker so the art pops visually:
+      ascii  → the on_byte character itself (e.g. '#' for 0x23)
+      hex    → the two-digit hex group that represents a lit pixel
+               (e.g. '88' for on_byte=0x88, since each pixel writes two
+               identical bytes and xxd -g 2 renders them as '8888')
+      binary → '11'  (two consecutive set-bits; avoids false highlights on
+               single '1' digits that appear in the hex address column)
+
+    The pattern ``<token>\\|$`` uses GNU BRE alternation: it matches either the
+    token OR the end of every line, so the ANSI reset code is emitted at each
+    line end and colours never bleed between rows.
+
+    Returns None if a colour command cannot be constructed (non-printable
+    on_byte in ascii mode).
+    """
+    if mode == "binary":
+        # '11' matches set-bit pairs inside '11111111' blocks without hitting
+        # single digits in the offset column (e.g. '00000001').
+        pattern = "11\\|$"
+
+    elif mode == "hex":
+        # on_byte is written twice per pixel (bytes_per_pixel=2), so xxd -g 2
+        # shows the digit pair repeated: 0x88 → '8888'.  Matching the two-digit
+        # repetition avoids false highlights on single-digit address characters.
+        digit = f"{on_byte:02x}"[0]
+        pattern = f"{digit}{digit}\\|$"
+
+    else:  # ascii
+        if not (0x20 <= on_byte <= 0x7E):
+            return None
+        char = chr(on_byte)
+        # Escape BRE meta-characters that are special at pattern start.
+        if char in r'\.^$*[]':
+            char = '\\' + char
+        pattern = f"{char}\\|$"
+
+    return ["grep", "--color=always", pattern]
+
+
+def _grep_display(grep_cmd: list[str] | None) -> str | None:
+    """Return the copy-pasteable shell snippet for the grep pipe.
+
+    Uses ``--color`` (auto) instead of ``--color=always`` for the display
+    string, and wraps the pattern in single quotes.
+    """
+    if grep_cmd is None:
+        return None
+    parts = list(grep_cmd)
+    # Replace --color=always with --color for the human-readable display.
+    parts = [p.replace("--color=always", "--color") for p in parts]
+    # Single-quote the pattern (last element) for safe shell copy-paste.
+    parts[-1] = f"'{parts[-1]}'"
+    return " ".join(parts)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -491,6 +549,7 @@ def verify_and_display(
     on_byte: int,
     off_byte: int,
     xxd_cmd: list[str],
+    grep_cmd: list[str] | None = None,
 ) -> bool:
     """Run xxd, display its output, and assert the art rows are present.
 
@@ -569,8 +628,19 @@ def verify_and_display(
                 f"                  got      {repr(actual_col)}"
             )
 
-    # ── display xxd output then verdict ───────────────────────────────────────
-    print(result.stdout)
+    # ── display xxd output (colourised if grep is available) ─────────────────
+    if grep_cmd is not None:
+        try:
+            subprocess.run(
+                grep_cmd,
+                input=result.stdout,
+                text=True,
+            )
+        except FileNotFoundError:
+            # grep not found — fall back to plain output
+            print(result.stdout)
+    else:
+        print(result.stdout)
 
     if mismatches:
         print("VERIFICATION FAILED — column mismatches:", file=sys.stderr)
@@ -588,6 +658,73 @@ def verify_and_display(
 
 def encode(args: argparse.Namespace) -> None:
     """Encode the secret message and write the output binary file."""
+
+    # ── validate arguments ────────────────────────────────────────────────────
+
+    if args.start_offset < 0:
+        print("ERROR: --start-offset must be >= 0.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.cols_per_row is not None and args.cols_per_row <= 0:
+        print("ERROR: --cols-per-row must be a positive integer.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.group is not None and args.group <= 0:
+        print("ERROR: --group must be a positive integer.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.limit is not None and args.limit <= 0:
+        print("ERROR: --limit must be a positive integer.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.on_byte is not None and not (0 <= args.on_byte <= 255):
+        print(f"ERROR: --on-byte value {args.on_byte} is out of range (0-255).", file=sys.stderr)
+        sys.exit(1)
+
+    if args.off_byte is not None and not (0 <= args.off_byte <= 255):
+        print(f"ERROR: --off-byte value {args.off_byte} is out of range (0-255).", file=sys.stderr)
+        sys.exit(1)
+
+    if args.binary_style == "packed" and args.layout == "horizontal":
+        print("ERROR: --binary-style packed requires --layout vertical.", file=sys.stderr)
+        sys.exit(1)
+
+    # ── handle --art-char (ascii mode convenience option) ─────────────────────
+    if args.art_char is not None:
+        if args.mode != "ascii":
+            print(
+                "WARNING: --art-char is only meaningful in ascii mode; ignoring.",
+                file=sys.stderr,
+            )
+        elif args.on_byte is not None:
+            print(
+                "ERROR: Use either --art-char or --on-byte, not both.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        elif len(args.art_char) != 1:
+            print(
+                "ERROR: --art-char must be exactly one character.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        elif args.art_char == '.':
+            print(
+                "ERROR: '.' as the art character? Seriously?\n"
+                "  '.' is already the background pixel — your art would be completely\n"
+                "  invisible, a masterpiece of nothing. Try '#', '@', '*', or literally\n"
+                "  any other character. Go on, be bold.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        elif not (0x20 <= ord(args.art_char) <= 0x7E):
+            print(
+                "ERROR: --art-char must be a printable ASCII character (0x20-0x7E).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        else:
+            args.on_byte = ord(args.art_char)
 
     # ── resolve byte values, grouping, and encoding per mode ──────────────────
     #
@@ -612,6 +749,15 @@ def encode(args: argparse.Namespace) -> None:
     on_byte  = args.on_byte  if args.on_byte  is not None else defaults["on"]
     off_byte = args.off_byte if args.off_byte is not None else defaults["off"]
     group    = args.group    if args.group    is not None else defaults["group"]
+
+    if on_byte == off_byte:
+        print(
+            f"ERROR: --on-byte and --off-byte are both 0x{on_byte:02x}.\n"
+            "  Lit and dark pixels would be identical — the art would be completely\n"
+            "  invisible. Choose different values for each.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # Determine encoding variant for binary mode
     binary_packed = (args.mode == "binary" and args.binary_style == "packed")
@@ -653,17 +799,24 @@ def encode(args: argparse.Namespace) -> None:
     parent_dir = os.path.dirname(os.path.abspath(outfile))
     os.makedirs(parent_dir, exist_ok=True)
 
-    with open(outfile, "wb") as fh:
-        fh.write(file_bytes)
+    try:
+        with open(outfile, "wb") as fh:
+            fh.write(file_bytes)
+    except OSError as exc:
+        print(f"ERROR: Could not write {outfile!r}: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # ── compute xxd limit ─────────────────────────────────────────────────────
     # With -s start_offset, xxd already skips the cover bytes, so -l is just the
     # art size.  User may override with --limit.
     limit = args.limit if args.limit is not None else art_size
 
-    # ── build the viewing-key command ─────────────────────────────────────────
-    xxd_cmd = build_xxd_cmd(outfile, cols, args.start_offset, group, limit, args.mode)
-    viewing_key = " ".join(xxd_cmd)
+    # ── build the viewing-key command and optional colour pipe ─────────────────
+    xxd_cmd  = build_xxd_cmd(outfile, cols, args.start_offset, group, limit, args.mode)
+    grep_cmd = build_grep_cmd(args.mode, on_byte)
+    viewing_key  = " ".join(xxd_cmd)
+    grep_display = _grep_display(grep_cmd)
+    color_key    = f"{viewing_key} | {grep_display}" if grep_display else None
 
     # ── print summary ─────────────────────────────────────────────────────────
     mode_label = args.mode if not binary_packed else "binary/packed"
@@ -685,6 +838,9 @@ def encode(args: argparse.Namespace) -> None:
     print("  VIEWING KEY  (share this command with the receiver)")
     print("═" * 60)
     print(f"  {viewing_key}")
+    if color_key:
+        print(f"\n  With colour highlighting:")
+        print(f"  {color_key}")
     print("═" * 60)
     print()
 
@@ -694,7 +850,7 @@ def encode(args: argparse.Namespace) -> None:
     # ── self-verification ─────────────────────────────────────────────────────
     ok = verify_and_display(
         outfile, art_bytes, args.start_offset, cols, total_rows,
-        args.mode, on_byte, off_byte, xxd_cmd,
+        args.mode, on_byte, off_byte, xxd_cmd, grep_cmd,
     )
     if not ok:
         sys.exit(1)
@@ -708,59 +864,60 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="xxdart",
         description=textwrap.dedent("""\
-            xxdart -- Hide ASCII art inside a binary file.
+            xxdart — Hide ASCII art inside a binary file, revealed only with the
+            right GNU xxd flags (the "viewing key").
 
-            The secret message is rendered using a 5x7 bitmap font and written as
-            raw bytes into the output file.  It is invisible under normal viewing.
-            It becomes readable only when GNU xxd is run with the correct flags:
+            The message is rendered as a bitmap font and written as raw bytes.
+            It is invisible under normal inspection.  The correct xxd flags snap
+            the byte rows into alignment and the art appears instantly.  A single
+            wrong flag destroys the picture.
 
-              -c N   bytes per row  (must equal the art's pixel-row width)
-              -s N   skip N leading cover bytes
-              -g N   hex grouping
-              -b     binary dump (binary mode only)
-              -l N   limit bytes shown
+            After encoding, the tool runs xxd automatically and pipes the output
+            through grep --color so the art is highlighted immediately.
 
-            These flags together form the "viewing key".  A wrong -c value wraps
-            rows at the wrong point and destroys the picture.  A wrong -s shows
-            cover bytes instead of art.  Only the right combination reveals it.
+            Subcommands
+            -----------
+              encode    Render a message and write it to a binary file.
+                        (The only subcommand for now — see: xxdart encode --help)
 
-            The tool computes the required flags automatically and prints the exact
-            xxd command the receiver must run.  It also runs that command itself
-            for immediate verification.
+            Quick examples
+            --------------
+              # ASCII mode — art in the rightmost column, default '#' ink:
+                python xxdart.py encode "HELLO" -o secret.bin
+                Colourised view:
+                  xxd -c 5 -g 2 -l 35 secret.bin | grep --color '#\\|$'
 
-            Font: 5x7 pixels per glyph, 1 pixel spacing between characters.
-            Covers: A-Z, a-z (as uppercase), 0-9, and common punctuation.
+              # Custom ink character:
+                python xxdart.py encode "HELLO" -o secret.bin --art-char '@'
+                  xxd -c 5 -g 2 -l 35 secret.bin | grep --color '@\\|$'
 
-            Layout:
-              cols (-c) = number_of_glyphs x 5 + (number_of_glyphs - 1)
-              art bytes = 7 x cols
-
-            Examples
-            --------
-              Vertical layout (default) — any message length, 5-byte rows:
-                python xxdart.py encode "HELLO WORLD" -o secret.bin
-                xxd -c 5 -g 2 -l 455 secret.bin
-
-              Horizontal layout — all chars side by side (short messages only):
-                python xxdart.py encode "HELLO" -o secret.bin --layout horizontal
-                xxd -c 29 -g 2 -l 203 secret.bin
-
-              Hex mode (4-char groups "8888"/"1111"):
+              # Hex mode — art in the hex column as '8888'/'1111' groups:
                 python xxdart.py encode "KEY" -o key.bin --mode hex
-                xxd -c 10 -g 2 -l 161 key.bin
+                  xxd -c 10 -g 2 -l 161 key.bin | grep --color '88\\|$'
 
-              Binary blocks (3 groups per row, 3-wide font):
+              # Binary blocks — 3 binary groups per row (3-wide compact font):
                 python xxdart.py encode "OK" -o ok.bin --mode binary
-                xxd -b -c 3 -g 1 -l 45 ok.bin
+                  xxd -b -c 3 -g 1 -l 45 ok.bin | grep --color '11\\|$'
 
-              Binary packed (1 group per row, bit pattern = pixels):
+              # Binary packed — 1 binary group per row, bit pattern = pixels:
                 python xxdart.py encode "OK" -o ok.bin --mode binary --binary-style packed
-                xxd -b -c 1 -g 1 -l 15 ok.bin
+                  xxd -b -c 1 -g 1 -l 15 ok.bin | grep --color '11\\|$'
 
-              With cover bytes and random noise:
+              # Horizontal layout — all chars side by side (short messages only):
+                python xxdart.py encode "HI" -o hi.bin --layout horizontal
+                  xxd -c 11 -g 2 -l 77 hi.bin | grep --color '#\\|$'
+
+              # Add cover bytes (noise before the art):
                 python xxdart.py encode "SECRET" -o out.bin \\
                   --start-offset 64 --noise random
-                xxd -c 5 -s 64 -g 2 -l 245 out.bin
+                  xxd -c 5 -s 64 -g 2 -l 245 out.bin | grep --color '#\\|$'
+
+            Key concept
+            -----------
+            Setting xxd's -c to the art's pixel-row width makes ONE xxd row =
+            ONE pixel row.  Wrong -c wraps rows and destroys the picture.
+            The flags ARE the decryption key — without them the file looks like
+            random binary noise.
         """),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -773,57 +930,126 @@ def main() -> None:
         help="Encode a secret message into a binary file.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=textwrap.dedent("""\
-            Encode a secret message as a 5x7 bitmap font and write it into a
-            binary file.  The art is only visible when xxd is run with the exact
-            flags printed by this command (the "viewing key").
+            Render a secret message as a bitmap font and write it into a binary
+            file.  The art is only visible when xxd is run with the exact flags
+            printed by this command (the "viewing key").
 
-            After writing the file, the tool verifies it automatically by running
-            xxd and checking every pixel row of the output.
+            After writing the file, the tool byte-verifies it, runs xxd, pipes
+            the output through grep --color for immediate colourised display, and
+            prints VERIFIED OK.
 
-            Modes
-            -----
-            ascii   Art appears in xxd's right-hand ASCII column.
-                    Lit pixel  -> 0x23 '#'  (printable, renders as '#' in ASCII col)
-                    Dark pixel -> 0x2e '.'  (printable, renders as '.' in ASCII col)
-                    xxd flags  : -c <width> -g 2 -l <art_size>
-                    Default grouping: -g 2 (xxd default, does not affect ASCII col)
+            ── MODES ────────────────────────────────────────────────────────────
+            --mode ascii   (default)
+              Art appears in xxd's right-hand ASCII column.
+              Lit pixel  → 0x23 '#'  dark pixel → 0x2e '.'
+              Font: 5-wide.  xxd flags: -c <w> -g 2 -l <size>
+              Colour grep pattern: grep --color '#\\|$'
 
-            hex     Art appears in xxd's hex data column.
-                    Lit pixel  -> 0x88  (hex "88", dense figure-eight shapes)
-                    Dark pixel -> 0x11  (hex "11", thin vertical strokes)
-                    xxd flags  : -c <width> -g 1 -l <art_size>
-                    Default grouping: -g 1 so each pixel byte is space-separated.
+            --mode hex
+              Art appears in xxd's hex data column.
+              Each pixel writes 2 identical bytes: lit=0x88→'8888', dark=0x11→'1111'
+              Dense figure-eight '8888' vs thin strokes '1111' for max contrast.
+              Font: 5-wide.  xxd flags: -c <2w> -g 2 -l <size>
+              Colour grep pattern: grep --color '88\\|$'
 
-            binary  Art appears in xxd's binary column (requires xxd -b).
-                    Two styles selectable with --binary-style:
+            --mode binary
+              Art appears in xxd's binary column (xxd -b required automatically).
+              Two styles via --binary-style:
 
-                    blocks (default)
-                      3-wide compact font.  Lit=0xff "11111111", dark=0x00
-                      "00000000".  xxd -b -c 3 -g 1 shows 3 groups per row:
-                        11111111 11111111 11111111
-                        11111111 00000000 11111111
-                    packed
-                      5-wide font.  Each pixel row is bit-packed into 1 byte
-                      (bit7=left pixel).  xxd -b -c 1 -g 1 shows 1 group per row:
-                        11111000     ← top of 'I'
-                        00100000
-                        00100000
-                      Maximum readability: the 8-bit pattern IS the pixel row.
-                      Requires --layout vertical (default).
+              blocks (default)
+                3-wide compact font.  Lit=0xff→'11111111', dark=0x00→'00000000'.
+                xxd flags: -b -c 3 -g 1 -l <size>
+                Colour grep pattern: grep --color '11\\|$'
+                  11111111 11111111 11111111   ← lit row
+                  11111111 00000000 11111111   ← mixed row
 
-            Layout
-            ------
-            vertical    (default) Each character is stacked below the previous.
-                        Works for any message length.
+              packed
+                5-wide font bit-packed into 1 byte per row (bit7=left pixel).
+                xxd flags: -b -c 1 -g 1 -l <size>
+                Colour grep pattern: grep --color '11\\|$'
+                  11111000   ← '#####' top of 'I' = 11111 + 000 padding
+                  00100000   ← '  #  ' centre of 'I'
+                Only works with --layout vertical.
 
-            horizontal  All characters placed side by side in one wide row.
-                        Row width grows with message length; hits xxd's hard
-                        limit of 256 bytes/row at ~42 characters.  Not supported
-                        with --binary-style packed.
+            ── LAYOUTS ──────────────────────────────────────────────────────────
+            --layout vertical   (default)
+              Each character is stacked below the previous.  Row width is always
+              equal to the glyph width (5 bytes ascii/hex, 3 bytes binary/blocks,
+              1 byte binary/packed).  Works for messages of any length.
 
-            All byte values and grouping can be overridden with --on-byte,
-            --off-byte, and --group.  All xxd formatting flags are fully
-            controllable.  Omit any option to use its mode-specific default.
+            --layout horizontal
+              All characters placed side by side in one wide row.  Row width
+              grows with message length; xxd's hard limit of 256 bytes/row caps
+              this at ~42 characters.  Not supported with --binary-style packed.
+
+            ── xxd FORMATTING FLAGS (the viewing key) ───────────────────────────
+            --cols-per-row N   xxd -c N   bytes per row (auto-computed if omitted)
+            --start-offset N   xxd -s N   skip N cover bytes before the art
+            --group N          xxd -g N   hex grouping (default: 2 ascii/hex, 1 binary)
+            --limit N          xxd -l N   limit output to N bytes (default: art size)
+            Note: -b is added automatically for --mode binary.
+
+            ── PIXEL BYTE VALUES ────────────────────────────────────────────────
+            --art-char CHAR    ASCII mode only.  Single printable character for
+                               lit pixels.  Convenience shorthand for --on-byte.
+                               Cannot be combined with --on-byte.  '.' is
+                               forbidden (it is the background pixel).
+            --on-byte BYTE     Byte value for lit pixels (decimal or 0xNN hex).
+                               Defaults: ascii=0x23, hex=0x88, binary=0xff.
+            --off-byte BYTE    Byte value for dark pixels.
+                               Defaults: ascii=0x2e, hex=0x11, binary=0x00.
+                               Must differ from --on-byte.
+
+            ── COVER BYTES ──────────────────────────────────────────────────────
+            --start-offset N   Prepend N bytes before the art (the receiver must
+                               use xxd -s N to skip them).  Default: 0.
+            --noise zeros|random
+                               Content of the cover bytes.  Default: zeros.
+
+            ── COLOUR HIGHLIGHTING ──────────────────────────────────────────────
+            The tool automatically pipes xxd output through grep --color when
+            displaying the verification output.  The VIEWING KEY section prints
+            both the plain xxd command and the colour-pipe version.
+
+            Grep patterns per mode (to avoid false highlights on the address):
+              ascii  : grep --color '#\\|$'   (or your --art-char value)
+              hex    : grep --color '88\\|$'  (two-digit lit group)
+              binary : grep --color '11\\|$'  (two-bit match, not single '1')
+
+            ── EXAMPLES ─────────────────────────────────────────────────────────
+            # Default ascii mode, vertical layout:
+              python xxdart.py encode "HELLO" -o secret.bin
+              View: xxd -c 5 -g 2 -l 35 secret.bin | grep --color '#\\|$'
+
+            # Custom ink character:
+              python xxdart.py encode "HELLO" -o secret.bin --art-char '*'
+              View: xxd -c 5 -g 2 -l 35 secret.bin | grep --color '\\*\\|$'
+
+            # Hex mode:
+              python xxdart.py encode "KEY" -o key.bin --mode hex
+              View: xxd -c 10 -g 2 -l 161 key.bin | grep --color '88\\|$'
+
+            # Binary blocks:
+              python xxdart.py encode "OK" -o ok.bin --mode binary
+              View: xxd -b -c 3 -g 1 -l 45 ok.bin | grep --color '11\\|$'
+
+            # Binary packed (cleanest single-group view):
+              python xxdart.py encode "OK" -o ok.bin --mode binary --binary-style packed
+              View: xxd -b -c 1 -g 1 -l 15 ok.bin | grep --color '11\\|$'
+
+            # Horizontal layout (short messages):
+              python xxdart.py encode "HI" -o hi.bin --layout horizontal
+              View: xxd -c 11 -g 2 -l 77 hi.bin | grep --color '#\\|$'
+
+            # With cover bytes and random noise:
+              python xxdart.py encode "TOP SECRET" -o payload.bin \\
+                --start-offset 64 --noise random
+              View: xxd -c 5 -s 64 -g 2 -l 595 payload.bin | grep --color '#\\|$'
+
+            # Full control — override every parameter:
+              python xxdart.py encode "CODE" -o out.bin \\
+                --mode hex --start-offset 32 --noise random \\
+                --on-byte 0xDB --off-byte 0x00 --group 2
         """),
     )
     enc.add_argument(
@@ -911,9 +1137,9 @@ def main() -> None:
         default=None,
         metavar="N",
         help=(
-            "Hex grouping size (= xxd -g N).  Controls how many bytes are "
-            "displayed per group in the hex column.  Default: 2 (ascii mode), "
-            "1 (hex mode, gives one space per pixel), 1 (binary mode)."
+            "Hex grouping size (= xxd -g N).  Default: 2 (ascii, groups pairs "
+            "of bytes in the hex column), 2 (hex, shows each 2-byte pixel as a "
+            "4-char group '8888'/'1111'), 1 (binary, separates each byte cleanly)."
         ),
     )
     xxd_group.add_argument(
@@ -934,13 +1160,27 @@ def main() -> None:
         description="Control what byte is written for lit and dark pixels.",
     )
     byte_group.add_argument(
+        "--art-char",
+        type=str,
+        default=None,
+        metavar="CHAR",
+        help=(
+            "ASCII mode only.  Single printable character used for lit pixels "
+            "(the 'ink' of the art).  Convenience shorthand for --on-byte.  "
+            "Cannot be used together with --on-byte.  Default: '#'.  "
+            "Note: '.' is forbidden — it is the background character and would "
+            "make the art invisible."
+        ),
+    )
+    byte_group.add_argument(
         "--on-byte",
         type=lambda x: int(x, 0),
         default=None,
         metavar="BYTE",
         help=(
             "Byte value for a lit pixel.  Accepts decimal or hex (0x23).  "
-            "Defaults: ascii=0x23 '#', hex=0x88, binary=0xff."
+            "Defaults: ascii=0x23 '#', hex=0x88, binary=0xff.  "
+            "For ascii mode prefer --art-char for convenience."
         ),
     )
     byte_group.add_argument(
@@ -950,7 +1190,8 @@ def main() -> None:
         metavar="BYTE",
         help=(
             "Byte value for a dark pixel.  Accepts decimal or hex (0x2e).  "
-            "Defaults: ascii=0x2e '.', hex=0x11, binary=0x00."
+            "Defaults: ascii=0x2e '.', hex=0x11, binary=0x00.  "
+            "Must differ from --on-byte."
         ),
     )
 
