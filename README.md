@@ -3,7 +3,7 @@
 Hide a secret message as ASCII art inside a binary file. The art is completely
 invisible when the file is opened normally or viewed with default hex dump
 settings. It only becomes visible when the file is examined with the GNU `xxd`
-utility using a specific combination of flags — those flags are the **viewing
+utility using a specific combination of flags - those flags are the **viewing
 key**.
 
 Give someone the binary file. Unless they run `xxd` with exactly the right
@@ -73,7 +73,7 @@ in red, making the `H` and `I` shapes immediately visible in the ASCII column.
 <!--   ![xxdart demo](images/demo.gif)                           -->
 <!-- ============================================================ -->
 
-*[Screenshot or terminal recording goes here — see comment above for instructions]*
+*[Screenshot or terminal recording goes here - see comment above for instructions]*
 
 ---
 
@@ -192,7 +192,7 @@ The highlighted character depends on the mode:
 
 | Mode | Matched token | Pattern | Why two characters? |
 |---|---|---|---|
-| ascii | the art character (default `#`) | `grep --color '#\|$'` | Single char is fine — `#` never appears in the hex address column |
+| ascii | the art character (default `#`) | `grep --color '#\|$'` | Single char is fine - `#` never appears in the hex address column |
 | hex | two-digit lit group (`88` for `0x88`) | `grep --color '88\|$'` | Single `8` would also highlight `8` digits in the offset address |
 | binary (blocks or packed) | `11` (two set bits) | `grep --color '11\|$'` | Single `1` would highlight `1` digits in the offset address (e.g. `00000001`) |
 
@@ -206,7 +206,7 @@ available via `brew install grep` on macOS).
 ## Modes and Layouts
 
 There are three hiding modes (selected with `--mode`) and two layout directions
-(`--layout`). Modes and layouts are independent — any combination is valid.
+(`--layout`). Modes and layouts are independent - any combination is valid.
 
 ### ascii (default)
 
@@ -217,7 +217,7 @@ printable ASCII, xxd renders them as their actual characters, and the
 pattern is readable as ASCII art.
 
 Use `--art-char` to change the ink character to anything you like (except
-`.` — the tool will roast you if you try).
+`.` - the tool will roast you if you try).
 
 ```
 python3 xxdart.py encode "HELLO" -o secret.bin
@@ -276,7 +276,7 @@ The art appears in the binary column of `xxd -b`. Two styles are available via
 #### blocks (default)
 
 Uses a compact 3-wide font. Lit pixels are stored as `0xff` (`11111111`) and
-dark pixels as `0x00` (`00000000`). Each row shows 3 binary groups — narrow
+dark pixels as `0x00` (`00000000`). Each row shows 3 binary groups - narrow
 enough to fit comfortably in a standard terminal.
 
 ```
@@ -312,7 +312,7 @@ Example xxd output:
 
 Uses the standard 5-wide font. Each pixel row is bit-packed into a single byte
 (bit 7 = leftmost pixel, unused low bits are zero). `xxd -b -c 1` displays
-exactly **1 binary group per line** — the 8-bit pattern is the pixel row itself.
+exactly **1 binary group per line** - the 8-bit pattern is the pixel row itself.
 This gives the highest readability: one line, one row, no scanning.
 
 ```
@@ -390,7 +390,7 @@ is used. You do not pass it separately.
 
 | Option | Default (ascii) | Default (hex) | Default (binary/blocks) | Description |
 |---|---|---|---|---|
-| `--art-char CHAR` | `#` | — | — | **ASCII mode only.** Single printable character for lit pixels. Convenience alternative to `--on-byte`. Cannot be used together with `--on-byte`. `'.'` is forbidden (it is the background character). |
+| `--art-char CHAR` | `#` | - | - | **ASCII mode only.** Single printable character for lit pixels. Convenience alternative to `--on-byte`. Cannot be used together with `--on-byte`. `'.'` is forbidden (it is the background character). |
 | `--on-byte BYTE` | `0x23` (`#`) | `0x88` | `0xff` | Byte value written for each lit pixel. Accepts decimal or hex (`0x23`). Not used in `--binary-style packed`. Must differ from `--off-byte`. |
 | `--off-byte BYTE` | `0x2e` (`.`) | `0x11` | `0x00` | Byte value written for each dark pixel. Not used in `--binary-style packed`. Must differ from `--on-byte`. |
 
@@ -609,7 +609,7 @@ Each flag is essential:
 | `-g 2` | Group hex by 2 bytes | Spacing changes but art survives; must match what the tool assumed |
 | `-l 413` | Show 413 bytes only | Without this, trailing file content appears below the art |
 
-The receiver needs only the file and the key command — no other software.
+The receiver needs only the file and the key command - no other software.
 
 ---
 
@@ -653,7 +653,7 @@ is written.
 Packed mode requires vertical layout.
 
 **File write failure** (permissions, disk full, bad path) produces an OS error
-message and exits cleanly — no partial file is left on disk.
+message and exits cleanly - no partial file is left on disk.
 
 ---
 
