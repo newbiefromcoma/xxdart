@@ -14,8 +14,66 @@ Give them the key and the message is revealed instantly.
 
 ## Sample Output
 
-<!-- Replace the line below with your screenshot or terminal recording -->
-*[Insert screenshot of encode output and xxd reveal here]*
+### Terminal output (text)
+
+Running `python3 xxdart.py encode "HI" -o secret.bin` produces output like this:
+
+```
+Wrote 75 bytes → secret.bin
+  Message  : 'HI'
+  Mode     : ascii
+  On-byte  : 0x23  (ascii '#', hex "23")
+  Off-byte : 0x2e  (ascii '.', hex "2e")
+  Layout   : vertical
+  Art size : 15 rows x 5 cols = 75 bytes
+  Cover    : 0 bytes (zeros)
+
+════════════════════════════════════════════════════════════
+  VIEWING KEY  (share this command with the receiver)
+════════════════════════════════════════════════════════════
+  xxd -c 5 -g 2 -l 75 secret.bin
+
+  With colour highlighting:
+  xxd -c 5 -g 2 -l 75 secret.bin | grep --color '#\|$'
+════════════════════════════════════════════════════════════
+
+00000000: 232e 2e2e 23  #...#
+00000005: 232e 2e2e 23  #...#
+0000000a: 232e 2e2e 23  #...#
+0000000f: 2323 2323 23  #####
+00000014: 232e 2e2e 23  #...#
+00000019: 232e 2e2e 23  #...#
+0000001e: 232e 2e2e 23  #...#
+00000023: 2e2e 2e2e 2e  .....
+00000028: 2323 2323 23  #####
+0000002d: 2e2e 232e 2e  ..#..
+00000032: 2e2e 232e 2e  ..#..
+00000037: 2e2e 232e 2e  ..#..
+0000003c: 2e2e 232e 2e  ..#..
+00000041: 2e2e 232e 2e  ..#..
+00000046: 2323 2323 23  #####
+
+VERIFIED OK
+```
+
+When viewed with `| grep --color '#\|$'`, the `#` characters are highlighted
+in red, making the `H` and `I` shapes immediately visible in the ASCII column.
+
+### Screenshot / terminal recording
+
+<!-- ============================================================ -->
+<!-- INSERT YOUR SCREENSHOT OR GIF BELOW THIS LINE               -->
+<!-- Recommended: capture `encode` output + colourised xxd view  -->
+<!-- You can use tools like:                                      -->
+<!--   - asciinema (https://asciinema.org) for terminal recordings -->
+<!--   - scrot / gnome-screenshot for static screenshots         -->
+<!--                                                              -->
+<!-- Example markdown to embed an image once you have it:        -->
+<!--   ![xxdart demo](images/demo.png)                           -->
+<!--   ![xxdart demo](images/demo.gif)                           -->
+<!-- ============================================================ -->
+
+*[Screenshot or terminal recording goes here — see comment above for instructions]*
 
 ---
 
@@ -114,10 +172,34 @@ python3 xxdart.py encode "MESSAGE" -o OUTPUT_FILE [options]
 
 The tool prints a summary of what was written and then prints the exact `xxd`
 command the receiver must run to reveal the hidden art. It also runs that
-command itself for immediate verification.
+command itself for immediate verification, with colour highlighting applied
+automatically.
 
 For messages of any length, the default vertical layout always works. Use
 `--layout horizontal` only for short messages (up to ~42 characters).
+
+### Colour Highlighting
+
+The tool pipes the xxd output through `grep --color` when displaying the art,
+so the lit pixels are highlighted in red and stand out immediately. The VIEWING
+KEY section also prints the full piped command for the receiver:
+
+```
+xxd -c 5 -g 2 -l 75 secret.bin | grep --color '#\|$'
+```
+
+The highlighted character depends on the mode:
+
+| Mode | Matched token | Pattern | Why two characters? |
+|---|---|---|---|
+| ascii | the art character (default `#`) | `grep --color '#\|$'` | Single char is fine — `#` never appears in the hex address column |
+| hex | two-digit lit group (`88` for `0x88`) | `grep --color '88\|$'` | Single `8` would also highlight `8` digits in the offset address |
+| binary (blocks or packed) | `11` (two set bits) | `grep --color '11\|$'` | Single `1` would highlight `1` digits in the offset address (e.g. `00000001`) |
+
+The `\|$` part is a GNU BRE trick: it matches the token **or** end-of-line,
+which forces the ANSI colour-reset code to be emitted at the end of every row
+so colours never bleed between lines. Requires GNU grep (standard on Linux;
+available via `brew install grep` on macOS).
 
 ---
 
@@ -134,31 +216,32 @@ another printable byte (default `0x2e` = `.`). Because both values are
 printable ASCII, xxd renders them as their actual characters, and the
 pattern is readable as ASCII art.
 
+Use `--art-char` to change the ink character to anything you like (except
+`.` — the tool will roast you if you try).
+
 ```
 python3 xxdart.py encode "HELLO" -o secret.bin
+python3 xxdart.py encode "HELLO" -o secret.bin --art-char '@'
 ```
 
 Reveal command (printed by the tool):
 
 ```
-xxd -c 29 -g 2 -l 203 secret.bin
+xxd -c 5 -g 2 -l 35 secret.bin
 ```
 
-Example xxd output (the art is in the rightmost column):
+With colour highlighting (also printed by the tool):
 
 ```
-00000000: 2e23 2323 2e2e 2e2e 2323 2323 ...  .###...####
-0000001d: 232e 2e2e 232e 232e 2e2e 232e ...  #...#.#...#
-...
+xxd -c 5 -g 2 -l 35 secret.bin | grep --color '#\|$'
 ```
 
 ### hex
 
-The art appears in the hex data column of `xxd`. Lit pixels are stored as
-`0x88` and dark pixels as `0x11`. In the hex dump, `88` appears as dense
-figure-eight shapes while `11` appears as thin vertical strokes, providing
-the maximum visual contrast achievable with hex digit characters. Grouping
-defaults to `-g 1` so each pixel byte is visually separated by a space.
+The art appears in the hex data column of `xxd`. Each pixel writes two
+identical bytes (`--on-byte` twice), so with `-g 2` the lit pixel displays
+as `8888` (dense figure-eight) and the dark pixel as `1111` (thin strokes),
+giving four-character groups with maximum contrast.
 
 ```
 python3 xxdart.py encode "HELLO" -o secret.bin --mode hex
@@ -167,14 +250,21 @@ python3 xxdart.py encode "HELLO" -o secret.bin --mode hex
 Reveal command:
 
 ```
-xxd -c 29 -g 1 -l 203 secret.bin
+xxd -c 10 -g 2 -l 70 secret.bin
+```
+
+With colour highlighting:
+
+```
+xxd -c 10 -g 2 -l 70 secret.bin | grep --color '88\|$'
 ```
 
 Example xxd output (the art is in the hex column):
 
 ```
-00000000: 11 88 88 88 11 11 11 11 88 88 88 ...
-0000001d: 88 11 11 11 88 11 88 11 11 11 88 ...
+00000000: 8888 1111 1111 1111 8888  ..........
+0000000a: 8888 1111 1111 1111 8888  ..........
+0000001e: 8888 8888 8888 8888 8888  ..........
 ...
 ```
 
@@ -197,6 +287,12 @@ Reveal command:
 
 ```
 xxd -b -c 3 -g 1 -l 45 secret.bin
+```
+
+With colour highlighting:
+
+```
+xxd -b -c 3 -g 1 -l 45 secret.bin | grep --color '11\|$'
 ```
 
 Example xxd output:
@@ -227,6 +323,12 @@ Reveal command:
 
 ```
 xxd -b -c 1 -g 1 -l 15 secret.bin
+```
+
+With colour highlighting:
+
+```
+xxd -b -c 1 -g 1 -l 15 secret.bin | grep --color '11\|$'
 ```
 
 Example xxd output (`O` then `K`, 7 rows each, 1 blank separator):
@@ -288,8 +390,9 @@ is used. You do not pass it separately.
 
 | Option | Default (ascii) | Default (hex) | Default (binary/blocks) | Description |
 |---|---|---|---|---|
-| `--on-byte BYTE` | `0x23` (`#`) | `0x88` | `0xff` | Byte value written for each lit pixel. Accepts decimal or hex (`0x23`). Not used in `--binary-style packed`. |
-| `--off-byte BYTE` | `0x2e` (`.`) | `0x11` | `0x00` | Byte value written for each dark pixel. Not used in `--binary-style packed`. |
+| `--art-char CHAR` | `#` | — | — | **ASCII mode only.** Single printable character for lit pixels. Convenience alternative to `--on-byte`. Cannot be used together with `--on-byte`. `'.'` is forbidden (it is the background character). |
+| `--on-byte BYTE` | `0x23` (`#`) | `0x88` | `0xff` | Byte value written for each lit pixel. Accepts decimal or hex (`0x23`). Not used in `--binary-style packed`. Must differ from `--off-byte`. |
+| `--off-byte BYTE` | `0x2e` (`.`) | `0x11` | `0x00` | Byte value written for each dark pixel. Not used in `--binary-style packed`. Must differ from `--on-byte`. |
 
 ### Cover Bytes
 
@@ -346,7 +449,7 @@ python3 xxdart.py encode "HI" -o hi.bin --layout horizontal
 Reveal:
 
 ```
-xxd -c 11 -g 2 -l 77 hi.bin
+xxd -c 11 -g 2 -l 77 hi.bin | grep --color '#\|$'
 ```
 
 Output (both characters side by side across 7 rows):
@@ -374,7 +477,7 @@ python3 xxdart.py encode "TOP SECRET" -o payload.bin \
 Viewing key printed by the tool:
 
 ```
-xxd -c 5 -s 64 -g 2 -l 595 payload.bin
+xxd -c 5 -s 64 -g 2 -l 595 payload.bin | grep --color '#\|$'
 ```
 
 ### Hex mode, vertical (default layout)
@@ -389,7 +492,7 @@ python3 xxdart.py encode "CODE" -o code.bin \
 Viewing key:
 
 ```
-xxd -c 5 -s 32 -g 1 -l 203 code.bin
+xxd -c 10 -s 32 -g 2 -l 203 code.bin | grep --color '88\|$'
 ```
 
 ### Hex mode with custom pixel bytes
@@ -411,7 +514,7 @@ python3 xxdart.py encode "OK" -o bits.bin --mode binary
 Reveal:
 
 ```
-xxd -b -c 3 -g 1 -l 45 bits.bin
+xxd -b -c 3 -g 1 -l 45 bits.bin | grep --color '11\|$'
 ```
 
 Each character appears as 7 rows of 3 binary groups, stacked top-to-bottom:
@@ -435,7 +538,7 @@ python3 xxdart.py encode "OK" -o bits.bin --mode binary --binary-style packed
 Reveal:
 
 ```
-xxd -b -c 1 -g 1 -l 15 bits.bin
+xxd -b -c 1 -g 1 -l 15 bits.bin | grep --color '11\|$'
 ```
 
 One line = one pixel row. The 8-bit pattern is read directly as the glyph:
@@ -528,6 +631,29 @@ written and byte-verified. The key command is still printed.
 
 **Empty message after filtering** (all characters were unsupported) produces
 an error and no file is written.
+
+**`--on-byte` equals `--off-byte`** produces an error. Lit and dark pixels
+would be identical and the art would be invisible.
+
+**`--art-char '.'`** produces an error and a stern message. `.` is the default
+background character; using it as the art character makes the art completely
+invisible.
+
+**`--art-char` and `--on-byte` together** produces an error. Use one or the
+other.
+
+**Out-of-range byte values** (outside 0–255 for `--on-byte` / `--off-byte`)
+produce a clear error message.
+
+**Invalid numeric arguments** (`--group 0`, `--limit -1`, `--start-offset -5`,
+`--cols-per-row 0`) are caught with descriptive error messages before any file
+is written.
+
+**`--binary-style packed` with `--layout horizontal`** produces an error.
+Packed mode requires vertical layout.
+
+**File write failure** (permissions, disk full, bad path) produces an OS error
+message and exits cleanly — no partial file is left on disk.
 
 ---
 
